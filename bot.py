@@ -1,38 +1,35 @@
 """
 Філобот — переписує коротке повідомлення у довгу "філософську"/рофляну версію.
-
-Як це працює:
-1. Пишеш боту в приват, або в груповому чаті згадуєш його: @ім'я_бота текст
-2. Бот бере твій текст і просить Claude (або іншу LLM) переписати його
-   довше, пафосніше/філософськи, з гумором.
-3. Відповідає тим самим повідомленням, тільки "роздутим".
+Працює на безкоштовному Gemini API (Google AI Studio).
 
 Встановлення:
-    pip install aiogram anthropic python-dotenv
+    pip install aiogram google-genai
 
 Запуск:
     export TELEGRAM_BOT_TOKEN="..."
-    export ANTHROPIC_API_KEY="..."
+    export GEMINI_API_KEY="..."
     python bot.py
 """
 
 import asyncio
-import os
 import logging
+import os
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
-from aiogram.filters import CommandStart, Command
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = (
     "Ти — гумористичний переписувач коротких повідомлень українською. "
@@ -46,13 +43,30 @@ SYSTEM_PROMPT = (
 
 
 def rewrite_text(original: str) -> str:
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=400,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": original}],
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=original,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            max_output_tokens=600,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
-    return response.content[0].text.strip()
+    return (response.text or "").strip()
+
+
+async def safe_rewrite(message: Message, text: str):
+    try:
+        # to_thread, щоб бот не "вис" поки Gemini думає
+        rewritten = await asyncio.to_thread(rewrite_text, text)
+    except Exception:
+        logging.exception("Gemini error")
+        await message.reply("Щось пішло не так з Gemini 😅 Спробуй ще раз трохи пізніше.")
+        return
+    if not rewritten:
+        await message.reply("Gemini нічого не відповів. Спробуй переформулювати.")
+        return
+    await message.reply(rewritten)
 
 
 @dp.message(CommandStart())
@@ -70,8 +84,7 @@ async def rofl_command(message: Message):
     if not text:
         await message.answer("Напиши текст після команди, напр.: /rofl привіт")
         return
-    rewritten = rewrite_text(text)
-    await message.reply(rewritten)
+    await safe_rewrite(message, text)
 
 
 @dp.message(F.text)
@@ -97,8 +110,7 @@ async def any_text_handler(message: Message):
     if not text:
         return
 
-    rewritten = rewrite_text(text)
-    await message.reply(rewritten)
+    await safe_rewrite(message, text)
 
 
 async def main():
@@ -107,3 +119,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+   
+   
